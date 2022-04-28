@@ -4,6 +4,7 @@ import cors from 'cors';
 import { MongoClient } from 'mongodb';
 import dotenv from 'dotenv';
 import Joi from 'joi';
+import dayjs from 'dayjs';
 
 dotenv.config();
 
@@ -45,7 +46,16 @@ app.post('/participants',async(req,res) => {
       return res.sendStatus(409);
     }
 
+    const message = {
+      from: participant.name,
+      to: 'Todos',
+      text: 'entra na sala...',
+      type: 'status',
+      time: dayjs().format('HH:mm:ss')
+    };
+
     await db.collection('participants').insertOne(participant);
+    await db.collection('messages').insertOne(message);
     res.sendStatus(201);
     mongoClient.close();
   } catch (e) {
@@ -73,8 +83,18 @@ app.post('/messages',(req,res) => {
   res.send('');
 });
 
-app.get('/messages',(req,res) => {
-  res.send('');
+app.get('/messages',async(req,res) => {
+  try {
+    await mongoClient.connect();
+    const db = mongoClient.db(dbName);
+    const messages = await db.collection('messages').find({}).toArray();
+    res.send(messages);
+    mongoClient.close();
+  } catch (e) {
+    console.error(e);
+    res.sendStatus(500);
+    mongoClient.close();
+  }
 });
 
 app.delete('/messages/:id',(req,res) => {
