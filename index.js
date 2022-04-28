@@ -15,10 +15,6 @@ const app = express();
 app.use(cors());
 app.use(json());
 
-const schema = Joi.object({
-  name: Joi.string().required().trim()
-});
-
 const options = {
   abortEarly: false, // include all errors
   allowUnknown: true, // ignore unknown props
@@ -26,6 +22,10 @@ const options = {
 }
 
 app.post('/participants',async(req,res) => {
+
+  const schema = Joi.object({
+    name: Joi.string().required().trim()
+  });
 
   const { error, value } = schema.validate(req.body, options);
 
@@ -79,16 +79,69 @@ app.get('/participants',async(req,res) => {
   }
 });
 
-app.post('/messages',(req,res) => {
-  res.send('');
-});
+app.post('/messages',async(req,res) => {
+  const schema = Joi.object({
+    to: Joi.string().required().trim(),
+    text: Joi.string().required().trim(),
+    type: Joi.string().required().valid('message','private_message')
+  });
 
-app.get('/messages',async(req,res) => {
+  const schemaUser = Joi.object({
+    user: Joi.string().required().trim(),
+  });
+
+  const { error, value } = schema.validate(req.body, options);
+  const user = req.headers.user;
+
+  if (error) return res.sendStatus(422);
+
   try {
     await mongoClient.connect();
     const db = mongoClient.db(dbName);
-    const messages = await db.collection('messages').find({}).toArray();
-    res.send(messages);
+    const participant = await db.collection('participants').find({from: user});
+
+    if (!participant) return res.sendStatus(422);
+
+    const message = {
+      to: value.to,
+      from: user,
+      text: value.text,
+      type: value.type,
+      time: dayjs().format('HH:mm:ss')
+    }
+
+    await db.collection('messages').insertOne(message); 
+
+    res.sendStatus(201);
+
+    mongoClient.close();
+  } catch (e) {
+    console.error(e);
+    res.sendStatus(500);
+    mongoClient.close();
+  }
+});
+
+app.get('/messages',async(req,res) => {
+
+  const schema = Joi.object({ user: Joi.string().required().trim()  });
+  const limit = req.query.limit;
+  const { error, value } = schema.validate(req.headers, options);
+
+  if (error) return res.sendStatus(422);
+
+  try {
+    await mongoClient.connect();
+    const db = mongoClient.db(dbName);
+    const messages = 
+      await db.collection('messages').find({ 
+        $or: [ 
+          {from: value.user}, 
+          {to:   value.user},
+          {to:   'Todos'}, 
+          {type: 'message'} ] }).toArray();
+    const messagesToReturn = !limit ? messages.slice(parseInt(limit) * (-1) ) : messages.slice();
+    res.send(messagesToReturn);
     mongoClient.close();
   } catch (e) {
     console.error(e);
