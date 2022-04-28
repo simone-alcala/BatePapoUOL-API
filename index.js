@@ -98,7 +98,7 @@ app.post('/messages',async(req,res) => {
   try {
     await mongoClient.connect();
     const db = mongoClient.db(dbName);
-    const participant = await db.collection('participants').find({from: user});
+    const participant = await db.collection('participants').find({name: user});
 
     if (!participant) return res.sendStatus(422);
 
@@ -158,8 +158,34 @@ app.put('/messages/:id',(req,res) => {
   res.send('');
 });
 
-app.post('/status',(req,res) => {
-  res.send('');
+app.post('/status',async(req,res) => {
+
+  const schema = Joi.object({ user: Joi.string().required().trim() });
+
+  const { error, value } = schema.validate(req.headers, options);
+  
+  if (error) return res.sendStatus(422);
+
+  const user = value.user;
+
+  try {
+    await mongoClient.connect();
+    const db = mongoClient.db(dbName);
+    const participant = await db.collection('participants').find({name: user}).toArray();
+    if (participant === 0) return res.sendStatus(404);
+
+    await db.collection('participants').updateOne( 
+      {_id: participant[0]._id},  { $set: { lastStatus: Date.now() } } ); 
+
+    res.sendStatus(200);
+
+    mongoClient.close();
+  } catch (e) {
+    console.error(e);
+    res.sendStatus(500);
+    mongoClient.close();
+  }
+
 });
 
 app.listen(5000, () => console.log(chalk.bold.green('Server running on port 5000')));
