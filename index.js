@@ -5,6 +5,8 @@ import { MongoClient, ObjectId } from 'mongodb';
 import dotenv from 'dotenv';
 import Joi from 'joi';
 import dayjs from 'dayjs';
+import {strict as assert} from 'assert';
+import {stripHtml} from 'string-strip-html';
 
 dotenv.config();
 
@@ -15,6 +17,7 @@ const app = express();
 app.use(cors());
 app.use(json());
 
+const schemaId      = Joi.object({ id: Joi.required() });
 const schemaName    = Joi.object({ name: Joi.string().required().trim() });
 const schemaUser    = Joi.object({ user: Joi.string().required().trim() });
 const schemaMessage = Joi.object({
@@ -37,10 +40,16 @@ function showErrorMessages(e,res){
     res.status(409).send(e.details); 
   } else if (e.name === 'notFound') {
     res.status(404).send(e.details); 
+  } else if (e.name === 'unauthorized') {
+    res.status(401).send(e.details); 
   } else {
     res.status(500).send(e); 
   }
 
+}
+
+function sanitize (text){
+  return stripHtml(text).result;
 }
 
 function verifyActiveUsers (){
@@ -87,7 +96,7 @@ app.post('/participants',async(req,res) => {
     const value = await schemaName.validateAsync(req.body,options);
 
     const participant = {
-      name: value.name,
+      name: sanitize(value.name),
       lastStatus: Date.now()
     };
 
@@ -108,26 +117,16 @@ app.post('/participants',async(req,res) => {
       time: dayjs().format('HH:mm:ss')
     };
 
-    const newParticipant = await db.collection('participants').insertOne(participant);
+    await db.collection('participants').insertOne(participant);
+    await db.collection('messages').insertOne(message);
 
-    if (newParticipant.acknowledged){
-
-      const newMessage = await db.collection('messages').insertOne(message);
-
-      if (newMessage.acknowledged){
-        res.sendStatus(201);
-        mongoClient.close();
-      }
-    }
+    res.sendStatus(201);
+    mongoClient.close();
 
   } catch (e) {
-
     console.log(e);   
-
     showErrorMessages(e,res);
-
-    mongoClient.close();
-   
+    mongoClient.close(); 
   }  
 });
 
@@ -162,17 +161,19 @@ app.post('/messages',async(req,res) => {
 
     await mongoClient.connect();
     const db = mongoClient.db(dbName);
+
+    const user = sanitize(valueUser.user);
     
-    const participant = await db.collection('participants').findOne({name: valueUser.user});
+    const participant = await db.collection('participants').findOne({name: user});
 
     if (!participant) 
-      throw { name: 'notFound' , details: `User ${valueUser.user} not found`}; //** VERIFICAR SE PŔECISA DESSA VALIDAÇÃO **/
+      throw { name: 'notFound' , details: `User ${user} not found`}; //** VERIFICAR SE PŔECISA DESSA VALIDAÇÃO **/
         
     const message = {
-      to: value.to,
-      from: valueUser.user,
-      text: value.text,
-      type: value.type,
+      to: sanitize(value.to),
+      from: user,
+      text: sanitize(value.text),
+      type: sanitize(value.type),
       time: dayjs().format('HH:mm:ss')
     }
 
@@ -196,6 +197,8 @@ app.get('/messages',async(req,res) => {
   try {
 
     const value = await schemaUser.validateAsync(req.headers,options);
+
+    const user = sanitize(value.user);
     
     await mongoClient.connect();
     const db = mongoClient.db(dbName);
@@ -203,8 +206,8 @@ app.get('/messages',async(req,res) => {
     const messages = 
       await db.collection('messages').find({ 
         $or: [ 
-          {from: value.user}, 
-          {to:   value.user},
+          {from: user}, 
+          {to:   user},
           {to:   'Todos'}, 
           {type: 'message'} ] }).toArray();
     
@@ -221,12 +224,43 @@ app.get('/messages',async(req,res) => {
   }
 });
 
-app.delete('/messages/:id',(req,res) => {
-  res.send('');
+app.delete('/messages/:id',async(req,res) => {
+
+  try {
+    const valueUser = await schemaUser.validateAsync(req.headers,options);
+    const user = sanitize(valueUser.user);
+    
+    const valueId = await schemaId.validateAsync(req.params,options);
+    const id = sanitize( (valueId.id.toString()) );
+
+    await mongoClient.connect();
+    const db = mongoClient.db(dbName);
+    
+    const message = await db.collection('messages').findOne({ _id: new ObjectId(id) });
+
+    if (!message)
+      throw { name: 'notFound' , details: `Message ${id} not found`};
+
+    if (message.from !== user) 
+      throw { name: 'unauthorized' , details: `User ${user} unauthorized`};
+
+    res.send(201);
+        
+  } catch (e){
+    console.log(e);   
+    showErrorMessages(e,res);
+    mongoClient.close();
+  }
 });
 
 app.put('/messages/:id',(req,res) => {
-  res.send('');
+  try {
+
+  } catch (e){
+    console.log(e);   
+    showErrorMessages(e,res);
+    mongoClient.close();
+  }
 });
 
 app.post('/status',async(req,res) => {
@@ -235,13 +269,15 @@ app.post('/status',async(req,res) => {
     
     const value = await schemaUser.validateAsync(req.headers,options);
 
+    const user = sanitize(value.user);
+
     await mongoClient.connect();
     const db = mongoClient.db(dbName);
 
-    const participant = await db.collection('participants').findOne({name: value.user});
+    const participant = await db.collection('participants').findOne({name: user});
 
     if (!participant) 
-      throw { name: 'notFound' , details: `User ${valueUser.user} not found`}; 
+      throw { name: 'notFound' , details: `User ${user} not found`}; 
 
     const updated = await db.collection('participants').updateOne( 
       {_id: new ObjectId(participant._id)},  { $set: { lastStatus: Date.now() } } ); 
