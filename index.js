@@ -101,7 +101,7 @@ app.post('/participants',async(req,res) => {
     await db.collection('participants').insertOne(participant);
     await db.collection('messages').insertOne(message);
 
-    res.sendStatus(201);
+    res.status(201).send(participant.name);
 
   } catch (e) {
     console.log(e);   
