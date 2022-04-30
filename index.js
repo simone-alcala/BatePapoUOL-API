@@ -5,19 +5,21 @@ import { MongoClient, ObjectId } from 'mongodb';
 import dotenv from 'dotenv';
 import Joi from 'joi';
 import dayjs from 'dayjs';
-import {strict as assert} from 'assert';
 import {stripHtml} from 'string-strip-html';
 
 dotenv.config();
 
+let db = '';
 const mongoClient = new MongoClient(process.env.MONGO_URI);
-const dbName = 'projeto12_uol';
+const promise = mongoClient.connect();
+promise.then ( () =>  db = mongoClient.db('projeto12_uol') ) ;
+promise.catch( (err) => console.log("Deu ruim no banco", e) );
 
 const app = express();
 app.use(cors());
 app.use(json());
 
-const schemaId      = Joi.object({ id: Joi.required() });
+const schemaId      = Joi.object({ id:   Joi.string().required().trim() });
 const schemaName    = Joi.object({ name: Joi.string().required().trim() });
 const schemaUser    = Joi.object({ user: Joi.string().required().trim() });
 const schemaMessage = Joi.object({
@@ -27,30 +29,16 @@ const schemaMessage = Joi.object({
 });
 
 const options = {
-  abortEarly: false, // include all errors
-  allowUnknown: true, // ignore unknown props
-  stripUnknown: true // remove unknown props
-}
-
-function showErrorMessages(e,res){
-
-  if (e.name === 'ValidationError'){
-    res.status(422).send(e.details); 
-  } else if (e.name === 'alreadyRegistered') {
-    res.status(409).send(e.details); 
-  } else if (e.name === 'notFound') {
-    res.status(404).send(e.details); 
-  } else if (e.name === 'unauthorized') {
-    res.status(401).send(e.details); 
-  } else {
-    res.status(500).send(e); 
-  }
-
+  abortEarly:   false, 
+  allowUnknown: true, 
+  stripUnknown: true 
 }
 
 function sanitize (text){
   return stripHtml(text).result;
 }
+
+verifyActiveUsers();
 
 function verifyActiveUsers (){
   setInterval(() => {
@@ -58,18 +46,11 @@ function verifyActiveUsers (){
   }, 15000);
 }
 
-verifyActiveUsers();
-
 async function deleteInactiveUsers(){
   try {
-    await mongoClient.connect();
-    const db = mongoClient.db(dbName);
-    const participants = await db.collection('participants').find({lastStatus: { $lt: Date.now()-10000 } }).toArray();
-    
+    const participants = await db.collection('participants').find({lastStatus: { $lt: Date.now()-10000 } }).toArray();  
     for (let participant of participants){    
-    
       const deleted = await db.collection('participants').deleteOne({_id: new ObjectId(participant._id) } ) ;
-
       if (deleted.deletedCount > 0) {
         const message = {
           from: participant.name,
@@ -78,12 +59,9 @@ async function deleteInactiveUsers(){
           type: 'status',
           time: dayjs().format('HH:mm:ss')
         };
-    
-        await db.collection('messages').insertOne(message);
+      await db.collection('messages').insertOne(message);
       }
     }
-    mongoClient.close();
-    
   } catch (e) {
     console.log ('Deu ruim: ' + e);
   }
@@ -93,21 +71,24 @@ app.post('/participants',async(req,res) => {
 
   try {    
 
-    const value = await schemaName.validateAsync(req.body,options);
+    const validation = schemaName.validate(req.body,options);
+
+    if (validation.error) {
+      res.status(422).send(validation.error.details);
+      return;
+    }
 
     const participant = {
-      name: sanitize(value.name),
+      name: sanitize(validation.value.name),
       lastStatus: Date.now()
     };
 
-    await mongoClient.connect();
-
-    const db = mongoClient.db(dbName);
-
     const alreadyRegistered = await db.collection('participants').findOne({name: participant.name});
     
-    if (alreadyRegistered) 
-      throw { name: 'alreadyRegistered' , details: `User ${participant.name} already registered`} ;
+    if (alreadyRegistered) {
+      res.status(409).send(`User ${participant.name} already registered`);
+      return;
+    }
 
     const message = {
       from: participant.name,
@@ -121,33 +102,21 @@ app.post('/participants',async(req,res) => {
     await db.collection('messages').insertOne(message);
 
     res.sendStatus(201);
-    mongoClient.close();
 
   } catch (e) {
     console.log(e);   
-    showErrorMessages(e,res);
-    mongoClient.close(); 
-  }  
+    res.status(500).send(e); 
+   }  
 });
 
 app.get('/participants',async(req,res) => {
   
   try {
-
-    await mongoClient.connect();
-    const db = mongoClient.db(dbName);
-
     const participants = await db.collection('participants').find({}).toArray();
-
     res.send(participants);
-
-    mongoClient.close();
-
   } catch (e) {
-
     console.log(e);
-    res.status(500).send(e);
-    mongoClient.close();
+    res.status(500).send(e); 
   } 
   
 });
@@ -156,24 +125,34 @@ app.post('/messages',async(req,res) => {
   
   try {
 
-    const value = await schemaMessage.validateAsync(req.body,options);
-    const valueUser = await schemaUser.validateAsync(req.headers,options);
+    const validation = schemaMessage.validate(req.body,options);
+    
+    if (validation.error) {
+      res.status(422).send(validation.error.details);
+      return;
+    }
+    
+    const validationUser = schemaUser.validate(req.headers,options);
+    
+    if (validationUser.error) {
+      res.status(422).send(validationUser.error.details);
+      return;
+    }
 
-    await mongoClient.connect();
-    const db = mongoClient.db(dbName);
-
-    const user = sanitize(valueUser.user);
+    const user = sanitize(validationUser.value.user);
     
     const participant = await db.collection('participants').findOne({name: user});
 
-    if (!participant) 
-      throw { name: 'notFound' , details: `User ${user} not found`}; //** VERIFICAR SE PŔECISA DESSA VALIDAÇÃO **/
-        
+    if (!participant) {
+      res.status(404).send(`User ${user} not found`); //** VERIFICAR SE PŔECISA DESSA VALIDAÇÃO **/
+      return;
+    }
+  
     const message = {
-      to: sanitize(value.to),
+      to:   sanitize(validation.value.to  ),
       from: user,
-      text: sanitize(value.text),
-      type: sanitize(value.type),
+      text: sanitize(validation.value.text),
+      type: sanitize(validation.value.type),
       time: dayjs().format('HH:mm:ss')
     }
 
@@ -181,28 +160,27 @@ app.post('/messages',async(req,res) => {
 
     res.sendStatus(201);
 
-    mongoClient.close();
-
   } catch (e) {
     console.log(e);   
-    showErrorMessages(e,res);
-    mongoClient.close();
+    res.status(500).send(e); 
   }
 });
 
 app.get('/messages',async(req,res) => {
  
-  const limit = req.query.limit;
-
   try {
 
-    const value = await schemaUser.validateAsync(req.headers,options);
+    const limit = req.query.limit;
+  
+    const validation = schemaUser.validate(req.headers,options);
 
-    const user = sanitize(value.user);
-    
-    await mongoClient.connect();
-    const db = mongoClient.db(dbName);
-    
+    if (validation.error) {
+      res.status(422).send(validation.error.details);
+      return;
+    }
+
+    const user = sanitize(validation.value.user);
+     
     const messages = 
       await db.collection('messages').find({ 
         $or: [ 
@@ -215,83 +193,150 @@ app.get('/messages',async(req,res) => {
        
     res.send(messagesToReturn);
 
-    mongoClient.close();
-
   } catch (e) {
     console.log(e);   
-    showErrorMessages(e,res);
-    mongoClient.close();
+    res.status(500).send(e); 
   }
 });
 
 app.delete('/messages/:id',async(req,res) => {
-
+  
   try {
-    const valueUser = await schemaUser.validateAsync(req.headers,options);
-    const user = sanitize(valueUser.user);
     
-    const valueId = await schemaId.validateAsync(req.params,options);
-    const id = sanitize( (valueId.id.toString()) );
+    const validationUser = schemaUser.validate(req.headers,options);
+  
+    if (validationUser.error) {
+      res.status(422).send(validationUser.error.details);
+      return;
+    }
+    
+    const validationId = schemaId.validate(req.params,options);
+  
+    if (validationId.error) {
+      res.status(422).send(validationId.error.details);
+      return;
+    }
 
-    await mongoClient.connect();
-    const db = mongoClient.db(dbName);
+    const user = sanitize(validationUser.value.user);
+    const id = sanitize( (validationId.value.id) );
     
     const message = await db.collection('messages').findOne({ _id: new ObjectId(id) });
+    
+    if (!message) {
+      res.status(404).send(`Message ${id} not found`); 
+      return;
+    }
 
-    if (!message)
-      throw { name: 'notFound' , details: `Message ${id} not found`};
+    if (message.from !== user) {
+      res.status(401).send( `User ${user} unauthorized`); 
+      return;
+    }
 
-    if (message.from !== user) 
-      throw { name: 'unauthorized' , details: `User ${user} unauthorized`};
+    await db.collection('messages').deleteOne({ _id: new ObjectId(id) });
 
-    res.send(201);
+    res.sendStatus(200);
         
   } catch (e){
     console.log(e);   
-    showErrorMessages(e,res);
-    mongoClient.close();
+    res.status(500).send(e); 
   }
 });
 
-app.put('/messages/:id',(req,res) => {
+app.put('/messages/:id', async(req,res) => {
+
   try {
+
+    const validation = schemaMessage.validate(req.body,options);
+    
+    if (validation.error) {
+      res.status(422).send(validation.error.details);
+      return;
+    }
+    
+    const validationUser = schemaUser.validate(req.headers,options);
+    
+    if (validationUser.error) {
+      res.status(422).send(validationUser.error.details);
+      return;
+    }
+
+    const validationId = schemaId.validate(req.params,options);
+  
+    if (validationId.error) {
+      res.status(422).send(validationId.error.details);
+      return;
+    }
+
+    const id = sanitize( (validationId.value.id) );
+    const user = sanitize(validationUser.value.user);
+    
+    const participant = await db.collection('participants').findOne({name: user});
+
+    if (!participant) {
+      res.status(404).send(`User ${user} not found`); //** VERIFICAR SE PŔECISA DESSA VALIDAÇÃO **/
+      return;
+    }
+
+    const message = await db.collection('messages').findOne({ _id: new ObjectId(id) });
+    
+    if (!message) {
+      res.status(404).send(`Message ${id} not found`); 
+      return;
+    }
+
+    if (message.from !== user) {
+      res.status(401).send( `User ${user} unauthorized`); 
+      return;
+    }
+
+    const to   = sanitize(validation.value.to);
+    const text = sanitize(validation.value.text);
+    const type = sanitize(validation.value.type);
+  
+    await db.collection('messages').updateOne( 
+      {_id: new ObjectId(id)} , 
+      { $set: { to, text, type, time: dayjs().format('HH:mm:ss')  }} ); 
+
+    res.sendStatus(201);
 
   } catch (e){
     console.log(e);   
-    showErrorMessages(e,res);
-    mongoClient.close();
+    res.status(500).send(e); 
   }
 });
 
 app.post('/status',async(req,res) => {
 
   try {
-    
-    const value = await schemaUser.validateAsync(req.headers,options);
 
-    const user = sanitize(value.user);
+    const validation = schemaUser.validate(req.headers,options);
+  
+    if (validation.error) {
+      res.status(422).send(validation.error.details);
+      return;
+    }
 
-    await mongoClient.connect();
-    const db = mongoClient.db(dbName);
+    const user = sanitize(validation.value.user);
 
     const participant = await db.collection('participants').findOne({name: user});
 
-    if (!participant) 
-      throw { name: 'notFound' , details: `User ${user} not found`}; 
+    if (!participant) {
+      res.status(404).send( `User ${user} not found`); 
+      return;
+    }
 
     const updated = await db.collection('participants').updateOne( 
       {_id: new ObjectId(participant._id)},  { $set: { lastStatus: Date.now() } } ); 
      
     res.sendStatus(200);
 
-    mongoClient.close();
-
   } catch (e) {
     console.log(e);   
-    showErrorMessages(e,res);
-    mongoClient.close();
+    res.status(500).send(e); 
   }
 
 });
 
-app.listen(5000, () => console.log(chalk.bold.green('Server running on port 5000')));
+app.listen(5000, () => 
+  console.log(chalk.bold.green('Server running on port 5000'))
+);
